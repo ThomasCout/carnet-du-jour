@@ -183,9 +183,7 @@ body {
   width: 220px;
   height: 220px;
   object-fit: contain;
-  background: var(--white);
-  border-radius: 24px;
-  border: 2.5px solid var(--ink);
+  mix-blend-mode: multiply;
 }
 .entry-fab {
   position: absolute;
@@ -246,16 +244,6 @@ body {
   color: var(--text-soft);
   font-family: 'Inter', sans-serif;
   margin-bottom: 18px;
-}
-.seed-link {
-  text-align: center;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--ink);
-  text-decoration: underline;
-  cursor: pointer;
-  margin-bottom: 18px;
-  font-family: 'Inter', sans-serif;
 }
 .daygrid { display: flex; flex-wrap: wrap; gap: 10px 8px; }
 .day-cell {
@@ -366,7 +354,6 @@ canvas { display: block; width: 100%; aspect-ratio: 1/1; touch-action: none; }
   <div class="screen" id="screen-year">
     <div class="year-pill-wrap"><div class="year-pill" id="yearPill">2026</div></div>
     <div class="garden-sub" id="gardenSub"></div>
-    <div class="seed-link" id="seedLink">🌱 Générer des dessins sur les 2 derniers mois</div>
     <div id="gardenContent"><div class="loading">Chargement…</div></div>
   </div>
 
@@ -457,6 +444,7 @@ let erasing = false;
 let brushSize = 6;
 let history = [];
 let todayKey = null;
+let drawTargetKey = null;    // clé du jour en cours d'édition sur l'écran de dessin
 let lastPos = null;
 let entryCache = {};        // dateStr -> dataUrl
 let selectedDate = new Date();
@@ -584,16 +572,17 @@ function showSaveError() {
   }, 4000);
 }
 
-async function saveToday() {
+async function saveEntry() {
   const btn = document.getElementById('saveBtn');
   const originalText = btn.textContent;
   btn.textContent = 'Enregistrement…';
   btn.disabled = true;
   try {
     const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    const result = await window.storage.set(todayKey, JSON.stringify({ dataUrl, savedAt: new Date().toISOString() }), false);
+    const targetDs = drawTargetKey.replace('day:', '');
+    const result = await window.storage.set(drawTargetKey, JSON.stringify({ dataUrl, savedAt: new Date().toISOString() }), false);
     if (!result) throw new Error('Storage returned no result');
-    entryCache[todayStr()] = dataUrl;
+    entryCache[targetDs] = dataUrl;
     showSavedBadge();
     btn.textContent = originalText;
     btn.disabled = false;
@@ -605,11 +594,11 @@ async function saveToday() {
     showSaveError();
   }
 }
-document.getElementById('saveBtn').addEventListener('click', saveToday);
+document.getElementById('saveBtn').addEventListener('click', saveEntry);
 
-async function loadTodayIntoCanvas() {
+async function loadEntryIntoCanvas() {
   try {
-    const res = await window.storage.get(todayKey, false);
+    const res = await window.storage.get(drawTargetKey, false);
     if (res && res.value) {
       const parsed = JSON.parse(res.value);
       restoreFromDataUrl(parsed.dataUrl, () => showSavedBadge());
@@ -629,10 +618,11 @@ document.getElementById('navYear').addEventListener('click', () => { showScreen(
 document.getElementById('backBtn').addEventListener('click', () => { showScreen('day'); renderDayScreen(); });
 
 function openDraw() {
-  document.getElementById('drawDate').textContent = "Aujourd'hui";
+  drawTargetKey = dateKey(selectedDate);
+  document.getElementById('drawDate').textContent = shortLabel(selectedDate);
   showScreen('draw');
   setupCanvasSize();
-  loadTodayIntoCanvas();
+  loadEntryIntoCanvas();
 }
 
 /* ---------------- Day screen rendering ---------------- */
@@ -724,7 +714,6 @@ function onFilmstripScroll() {
 function renderDayMain() {
   const main = document.getElementById('dayMain');
   const ds = toDateStr(selectedDate);
-  const isToday = ds === todayStr();
   document.getElementById('dayLabel').textContent = shortLabel(selectedDate);
 
   if (entryCache[ds]) {
@@ -732,17 +721,15 @@ function renderDayMain() {
     const wrap = document.createElement('div');
     wrap.className = 'entry-view';
     wrap.innerHTML = `
-      ${isToday ? '<div class="entry-fab" id="fabToday" title="Modifier">+</div>' : ''}
+      <div class="entry-fab" id="fabEdit" title="Modifier">+</div>
       <img src="${entryCache[ds]}">
       <div class="entry-date">${fullLabel(selectedDate)}</div>
-      ${isToday ? '<div class="entry-edit" id="editTodayBtn">Modifier</div>' : ''}
+      <div class="entry-edit" id="editBtn">Modifier</div>
     `;
     main.appendChild(wrap);
-    if (isToday) {
-      document.getElementById('editTodayBtn').addEventListener('click', openDraw);
-      document.getElementById('fabToday').addEventListener('click', openDraw);
-    }
-  } else if (isToday) {
+    document.getElementById('editBtn').addEventListener('click', openDraw);
+    document.getElementById('fabEdit').addEventListener('click', openDraw);
+  } else {
     main.innerHTML = `
       <div class="plant-cta" id="plantBtn">
         <div class="plant-circle">
@@ -755,12 +742,6 @@ function renderDayMain() {
         <div class="plant-label">Planter mon souvenir</div>
       </div>`;
     document.getElementById('plantBtn').addEventListener('click', openDraw);
-  } else {
-    main.innerHTML = `
-      <div class="empty-past">
-        <div class="dash">·</div>
-        <p>Pas de dessin ce jour-là.</p>
-      </div>`;
   }
 }
 
@@ -827,167 +808,6 @@ async function loadGarden() {
   content.innerHTML = '';
   content.appendChild(grid);
 }
-
-/* ---------------- Demo doodles (child-style drawings) ---------------- */
-function jit(v, amt) { return v + (Math.random() - 0.5) * amt; }
-function setupDoodleCtx(ctx, color) {
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = 7;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-}
-function seg(ctx, x1, y1, x2, y2) {
-  ctx.beginPath(); ctx.moveTo(jit(x1,5), jit(y1,5)); ctx.lineTo(jit(x2,5), jit(y2,5)); ctx.stroke();
-}
-function ring(ctx, x, y, r, fill) {
-  ctx.beginPath(); ctx.arc(jit(x,4), jit(y,4), r, 0, Math.PI*2);
-  fill ? ctx.fill() : ctx.stroke();
-}
-
-function doodleHouse(ctx) {
-  ctx.beginPath();
-  ctx.moveTo(jit(70,4),150); ctx.lineTo(jit(70,4),240); ctx.lineTo(jit(230,4),240); ctx.lineTo(jit(230,4),150); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(jit(55,6),155); ctx.lineTo(jit(150,6),75); ctx.lineTo(jit(245,6),155); ctx.stroke();
-  seg(ctx, 135,240,135,195); seg(ctx,135,195,165,195); seg(ctx,165,195,165,240);
-  ctx.strokeRect(jit(90,4),175,28,28);
-  seg(ctx,90,189,118,189); seg(ctx,104,175,104,203);
-  seg(ctx,200,120,200,90); seg(ctx,200,90,215,90); seg(ctx,215,90,215,105);
-}
-function doodlePerson(ctx) {
-  ring(ctx,150,85,28,false);
-  ring(ctx,140,80,3,true); ring(ctx,160,80,3,true);
-  ctx.beginPath(); ctx.arc(150,95,10,0.15*Math.PI,0.85*Math.PI); ctx.stroke();
-  seg(ctx,150,113,150,195);
-  seg(ctx,150,135,105,165); seg(ctx,150,135,195,165);
-  seg(ctx,150,195,110,255); seg(ctx,150,195,190,255);
-}
-function doodleBird(ctx) {
-  ctx.beginPath(); ctx.ellipse(jit(150,4),jit(160,4),55,38,0,0,Math.PI*2); ctx.stroke();
-  ring(ctx,110,140,20,false);
-  ctx.beginPath(); ctx.moveTo(95,138); ctx.lineTo(70,145); ctx.lineTo(95,152); ctx.stroke();
-  ring(ctx,102,134,3,true);
-  ctx.beginPath(); ctx.moveTo(160,170); ctx.quadraticCurveTo(210,155,230,180); ctx.stroke();
-  seg(ctx,130,196,115,225); seg(ctx,170,196,185,225);
-}
-function doodleSun(ctx) {
-  ring(ctx,150,150,45,false);
-  for (let a=0;a<8;a++) {
-    const ang = a*Math.PI/4;
-    const x1=150+Math.cos(ang)*58, y1=150+Math.sin(ang)*58;
-    const x2=150+Math.cos(ang)*88, y2=150+Math.sin(ang)*88;
-    seg(ctx,x1,y1,x2,y2);
-  }
-}
-function doodleTree(ctx) {
-  seg(ctx,150,260,150,170); seg(ctx,150,260,135,270); seg(ctx,150,260,165,270);
-  ring(ctx,150,120,55,false);
-  ring(ctx,108,150,32,false);
-  ring(ctx,192,150,32,false);
-}
-function doodleFlower(ctx) {
-  seg(ctx,150,260,150,160);
-  seg(ctx,150,220,120,235); seg(ctx,150,235,180,250);
-  for (let a=0;a<5;a++) {
-    const ang = a*(Math.PI*2/5) - Math.PI/2;
-    ring(ctx,150+Math.cos(ang)*32, 120+Math.sin(ang)*32, 22, false);
-  }
-  ring(ctx,150,120,16,false);
-}
-function doodleCat(ctx) {
-  ctx.beginPath(); ctx.ellipse(150,190,60,45,0,0,Math.PI*2); ctx.stroke();
-  ring(ctx,150,110,42,false);
-  ctx.beginPath(); ctx.moveTo(118,80); ctx.lineTo(108,45); ctx.lineTo(138,72); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(182,80); ctx.lineTo(192,45); ctx.lineTo(162,72); ctx.stroke();
-  ring(ctx,135,108,3,true); ring(ctx,165,108,3,true);
-  seg(ctx,120,130,90,122); seg(ctx,120,138,88,138);
-  seg(ctx,180,130,210,122); seg(ctx,180,138,212,138);
-  ctx.beginPath(); ctx.moveTo(205,200); ctx.quadraticCurveTo(240,190,235,150); ctx.stroke();
-}
-function doodleBalloon(ctx) {
-  ring(ctx,150,120,55,false);
-  ctx.beginPath(); ctx.moveTo(150,175); ctx.lineTo(150,190); ctx.lineTo(140,200); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(140,200);
-  ctx.quadraticCurveTo(160,225,140,250);
-  ctx.quadraticCurveTo(120,275,150,290);
-  ctx.stroke();
-}
-function doodleStar(ctx) {
-  ctx.beginPath();
-  for (let i=0;i<5;i++) {
-    const a1 = -Math.PI/2 + i*(Math.PI*2/5);
-    const a2 = a1 + Math.PI/5;
-    const x1=150+Math.cos(a1)*70, y1=150+Math.sin(a1)*70;
-    const x2=150+Math.cos(a2)*28, y2=150+Math.sin(a2)*28;
-    if (i===0) ctx.moveTo(x1,y1); else ctx.lineTo(x1,y1);
-    ctx.lineTo(x2,y2);
-  }
-  ctx.closePath(); ctx.stroke();
-}
-function doodleCloud(ctx) {
-  ring(ctx,110,160,32,false); ring(ctx,155,140,40,false); ring(ctx,200,165,30,false);
-  ctx.beginPath(); ctx.moveTo(78,175); ctx.lineTo(232,175); ctx.stroke();
-}
-function doodleFish(ctx) {
-  ctx.beginPath(); ctx.ellipse(140,150,70,42,0,0,Math.PI*2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(205,150); ctx.lineTo(245,120); ctx.lineTo(245,180); ctx.closePath(); ctx.stroke();
-  ring(ctx,110,140,4,true);
-  ctx.beginPath(); ctx.moveTo(130,192); ctx.lineTo(115,215); ctx.stroke();
-}
-function doodleHeart(ctx) {
-  ctx.beginPath();
-  ctx.moveTo(150,205);
-  ctx.bezierCurveTo(80,150,95,90,150,120);
-  ctx.bezierCurveTo(205,90,220,150,150,205);
-  ctx.stroke();
-}
-
-const DOODLES = [doodleHouse, doodlePerson, doodleBird, doodleSun, doodleTree, doodleFlower, doodleCat, doodleBalloon, doodleStar, doodleCloud, doodleFish, doodleHeart];
-const KID_COLORS = ['#322da3','#c9524a','#3f8c53','#e0a63a','#3f6fb8','#a05fb0','#d9754a'];
-
-function renderDoodleDataUrl(fn) {
-  const off = document.createElement('canvas');
-  off.width = 300; off.height = 300;
-  const octx = off.getContext('2d');
-  octx.fillStyle = '#ffffff';
-  octx.fillRect(0,0,300,300);
-  const color = KID_COLORS[Math.floor(Math.random()*KID_COLORS.length)];
-  setupDoodleCtx(octx, color);
-  fn(octx);
-  return off.toDataURL('image/jpeg', 0.85);
-}
-
-async function seedDemoEntries() {
-  const link = document.getElementById('seedLink');
-  link.textContent = 'Génération en cours…';
-  await ensureEntriesLoaded();
-  const today = new Date();
-  const jobs = [];
-  for (let i = 1; i <= 60; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const ds = toDateStr(d);
-    if (entryCache[ds]) continue;
-    if (Math.random() < 0.22) continue; // laisse quelques jours vides, plus réaliste
-    const fn = DOODLES[Math.floor(Math.random() * DOODLES.length)];
-    const dataUrl = renderDoodleDataUrl(fn);
-    entryCache[ds] = dataUrl;
-    jobs.push(
-      window.storage.set('day:' + ds, JSON.stringify({ dataUrl, savedAt: d.toISOString() }), false)
-    );
-  }
-  try {
-    await Promise.all(jobs);
-    link.textContent = `✓ ${jobs.length} dessins ajoutés`;
-    setTimeout(() => { link.style.display = 'none'; }, 2000);
-  } catch (err) {
-    link.textContent = "Erreur pendant la génération, réessaie";
-  }
-  loadGarden();
-}
-document.getElementById('seedLink').addEventListener('click', seedDemoEntries);
 
 /* ---------------- Init ---------------- */
 function init() {
